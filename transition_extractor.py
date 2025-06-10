@@ -31,7 +31,7 @@ def extract_text_from_docx(uploaded_file) -> str:
         return ""
 
 def process_document(uploaded_file):
-    """Process a single document to extract transitions and triplets."""
+    """Updated process_document function with improved transition extraction"""
     try:
         # Read the document
         doc = Document(uploaded_file)
@@ -60,7 +60,8 @@ def process_document(uploaded_file):
             'has_marker': len(marker_positions) > 0,
             'marker_count': len(marker_positions),
             'found_transitions': [],
-            'articles_processed': 0
+            'articles_processed': 0,
+            'transition_lines_found': 0
         }
         
         if not marker_positions:
@@ -75,7 +76,7 @@ def process_document(uploaded_file):
             transitions_marker_index = full_text.find("Transitions :", main_paragraph_start)
             if transitions_marker_index == -1:
                 continue
-                
+            
             # Find the end of this article (next marker or end of transitions section)
             next_marker_pos = marker_positions[i + 1] if i + 1 < len(marker_positions) else len(full_text)
             
@@ -83,9 +84,10 @@ def process_document(uploaded_file):
             if transitions_marker_index > next_marker_pos:
                 continue
             
+            # Extract the main paragraph (between marker and "Transitions:")
             main_paragraph = full_text[main_paragraph_start:transitions_marker_index].strip()
             
-            # Extract transitions for this article
+            # Extract transitions section
             transitions_start = transitions_marker_index + len("Transitions :")
             transitions_end = next_marker_pos
             
@@ -95,51 +97,23 @@ def process_document(uploaded_file):
             if next_article_match:
                 transitions_section = transitions_section[:next_article_match.start()].strip()
             
-            # Extract individual transitions
-            article_transitions = []
-            for line in transitions_section.split('\n'):
-                line = line.strip()
-                if line and line != "Transitions :" and not re.match(r'^\d+\s+du\s+\d+/\d+', line):
-                    # Clean up common prefixes/suffixes
-                    line = re.sub(r'^[-•\d\.\s]+', '', line).strip()
-                    if len(line) > 2:
-                        article_transitions.append(line)
-                        debug_info['found_transitions'].append(line)
+            # Extract individual transitions using the improved function
+            article_transitions = extract_transitions_from_section(transitions_section)
+            debug_info['found_transitions'].extend(article_transitions)
             
-            # Extract triplets for this article
+            # Process each transition ONLY within this article's main paragraph
             for transition in article_transitions:
-                if transition.lower() in main_paragraph.lower():
-                    # Find transition in paragraph (case insensitive)
-                    para_lower = main_paragraph.lower()
-                    trans_lower = transition.lower()
-                    
-                    start_idx = 0
-                    while True:
-                        pos = para_lower.find(trans_lower, start_idx)
-                        if pos == -1:
-                            break
-                            
-                        # Extract context around transition
-                        before = main_paragraph[:pos].strip()
-                        after = main_paragraph[pos + len(transition):].strip()
-                        
-                        if len(before) > 10 and len(after) > 10:
-                            # Get last sentence of before
-                            sentences_before = re.split(r'[.!?]+\s+', before)
-                            last_sentence = sentences_before[-1] if sentences_before else before
-                            
-                            # Get first sentence of after
-                            sentences_after = re.split(r'[.!?]+\s+', after)
-                            first_sentence = sentences_after[0] if sentences_after else after
-                            
-                            triplet = {
-                                'paragraph_a': last_sentence.strip(),
-                                'transition': transition,
-                                'paragraph_b': first_sentence.strip()
-                            }
-                            all_triplets.append(triplet)
-                        
-                        start_idx = pos + 1
+                # Create variations of the transition
+                transition_variations = create_transition_variations(transition)
+                
+                # Extract triplets for this transition ONLY from this article's main paragraph
+                triplets = extract_context_around_transition(main_paragraph, transition, transition_variations)
+                all_triplets.extend(triplets)
+                
+                # Update progress for user feedback
+                if len(article_transitions) > 10:  # Only show progress for large batches
+                    progress = (article_transitions.index(transition) + 1) / len(article_transitions)
+                    st.progress(progress, text=f"Processing transition {article_transitions.index(transition) + 1}/{len(article_transitions)}")
             
             all_transitions.extend(article_transitions)
             debug_info['articles_processed'] += 1
@@ -150,6 +124,231 @@ def process_document(uploaded_file):
     except Exception as e:
         st.error(f"Error processing {uploaded_file.name}: {str(e)}")
         return [], [], uploaded_file.name, {'error': str(e)}
+
+
+def extract_transitions_from_section(transitions_section: str) -> List[str]:
+    """Extract clean transitions from the transitions section at the end of articles"""
+    transitions = []
+    
+    for line in transitions_section.split('\n'):
+        line = line.strip()
+        if line and line != "Transitions :" and not re.match(r'^\d+\s+du\s+\d+/\d+', line):
+            # Clean up common prefixes/suffixes
+            line = re.sub(r'^[-•\d\.\s\:]+', '', line).strip()
+            # Remove trailing punctuation and spaces
+            line = re.sub(r'[,\s]+$', '', line).strip()
+            if len(line) > 2:
+                transitions.append(line)
+    
+    return transitions
+
+def create_transition_variations(transition: str) -> List[str]:
+    """Create variations of a transition to handle different formats and punctuation"""
+    variations = []
+    
+    # Original transition
+    variations.append(transition)
+    
+    # Basic case variations
+    variations.append(transition.lower())
+    variations.append(transition.capitalize())
+    
+    # Handle "que" vs "qu'" - FIXED VERSION
+    if "que" in transition.lower():
+        # Replace "que" at word boundary with "qu'"
+        var_with_apostrophe = re.sub(r'\bque\b', "qu'", transition, flags=re.IGNORECASE)
+        if var_with_apostrophe != transition:  # Only add if it's different
+            variations.append(var_with_apostrophe)
+            variations.append(var_with_apostrophe.lower())
+            variations.append(var_with_apostrophe.capitalize())
+    
+    # Handle "qu'" vs "que" (reverse case)
+    if "qu'" in transition.lower():
+        var_without_apostrophe = re.sub(r"\bqu'", "que ", transition, flags=re.IGNORECASE)
+        if var_without_apostrophe != transition:
+            variations.append(var_without_apostrophe)
+            variations.append(var_without_apostrophe.lower())
+    
+    # Handle punctuation variations
+    base_transition = transition.rstrip('.,!?;:')
+    if base_transition != transition:
+        variations.append(base_transition)
+        variations.append(base_transition.lower())
+    
+    # Add version with comma at the end
+    if not transition.endswith(','):
+        variations.append(transition + ',')
+        variations.append((transition + ',').lower())
+    
+    # Add version with period at the end
+    if not transition.endswith('.'):
+        variations.append(transition + '.')
+        variations.append((transition + '.').lower())
+    
+    # Remove duplicates while preserving order
+    unique_variations = []
+    for var in variations:
+        if var and var not in unique_variations:
+            unique_variations.append(var)
+    
+    return unique_variations
+
+
+
+def find_sentence_boundaries(text: str) -> List[int]:
+    """Find sentence boundaries in text, handling various edge cases"""
+    boundaries = [0]  # Start of text
+    
+    # Improved sentence boundary detection
+    sentence_endings = re.finditer(r'[.!?]+(?:\s+|$)', text)
+    
+    for match in sentence_endings:
+        end_pos = match.end()
+        # Skip abbreviations and numbers
+        before_match = text[max(0, match.start()-10):match.start()]
+        if not re.search(r'\b(?:M|Mme|Dr|St|etc|vs|cf|p|pp|vol|n°|art)\.$', before_match, re.IGNORECASE):
+            boundaries.append(end_pos)
+    
+    # Also add paragraph boundaries as potential sentence boundaries
+    paragraph_breaks = re.finditer(r'\n\s*\n', text)
+    for match in paragraph_breaks:
+        boundaries.append(match.end())
+    
+    boundaries.append(len(text))  # End of text
+    return sorted(list(set(boundaries)))
+
+
+def extract_context_around_transition(main_paragraph: str, transition: str, transition_variations: List[str]) -> List[Dict]:
+    """Extract exactly one sentence before and after each transition occurrence - FOCUSED DEBUG"""
+    triplets = []
+    
+    # Only debug the "Enfin" transition
+    if "Enfin" in transition:
+        print(f"\n=== DEBUGGING ENFIN TRANSITION ===")
+        print(f"Looking for: '{transition}'")
+        print(f"Main paragraph length: {len(main_paragraph)}")
+        
+        # Check if "enfin" exists in the text at all
+        enfin_pos = main_paragraph.lower().find("enfin")
+        if enfin_pos == -1:
+            print("❌ 'enfin' NOT FOUND in main paragraph at all!")
+            print(f"Last 200 chars of paragraph: ...{main_paragraph[-200:]}")
+            return []
+        else:
+            print(f"✅ Found 'enfin' at position {enfin_pos}")
+            # Show context around enfin
+            start = max(0, enfin_pos - 50)
+            end = min(len(main_paragraph), enfin_pos + 100)
+            print(f"Context: ...{main_paragraph[start:end]}...")
+        
+        # Check each variation
+        print(f"Testing {len(transition_variations)} variations:")
+        for i, var in enumerate(transition_variations[:3]):  # Only show first 3
+            found = main_paragraph.lower().find(var.lower())
+            print(f"  {i+1}. '{var}' -> {'FOUND' if found != -1 else 'NOT FOUND'}")
+    
+    # Find all transition positions in the text
+    transition_positions = []
+    
+    for variation in transition_variations:
+        if not variation.strip():
+            continue
+            
+        text_lower = main_paragraph.lower()
+        var_lower = variation.lower().strip()
+        
+        start_pos = 0
+        while True:
+            pos = text_lower.find(var_lower, start_pos)
+            if pos == -1:
+                break
+            
+            actual_text = main_paragraph[pos:pos + len(variation)]
+            transition_positions.append((pos, pos + len(variation), actual_text, transition))
+            start_pos = pos + 1
+    
+    # Only log summary for "Enfin"
+    if "Enfin" in transition:
+        print(f"Total matches found: {len(transition_positions)}")
+        if len(transition_positions) == 0:
+            print("❌ NO MATCHES - This is the problem!")
+            return []
+    
+    # Remove duplicates and sort by position
+    unique_positions = []
+    for pos_info in transition_positions:
+        is_duplicate = False
+        for existing in unique_positions:
+            if abs(existing[0] - pos_info[0]) < 5:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            unique_positions.append(pos_info)
+    
+    unique_positions.sort(key=lambda x: x[0])
+    
+    # Process each transition occurrence
+    for trans_start, trans_end, actual_transition, original_transition in unique_positions:
+        # Find exactly one sentence before the transition
+        text_before = main_paragraph[:trans_start]
+        sentences_before = re.split(r'(?<=[.!?])\s+', text_before.strip())
+        sentences_before = [s.strip() for s in sentences_before if s.strip()]
+        
+        if sentences_before:
+            para_a_text = sentences_before[-1].strip()
+        else:
+            para_a_text = text_before.strip()
+        
+        if para_a_text and not para_a_text.endswith(('.', '!', '?')):
+            para_a_text += '.'
+        
+        # Find exactly one sentence after the transition
+        text_after = main_paragraph[trans_end:].strip()
+        text_after = re.sub(r'^[,\s]+', '', text_after)
+        
+        sentence_match = re.search(r'^[^.!?]*[.!?](?=\s|$)', text_after)
+        
+        if sentence_match:
+            para_b_text = sentence_match.group().strip()
+        else:
+            first_part = text_after.split('\n')[0]
+            if len(first_part) > 100:
+                para_b_text = first_part[:100].strip() + '.'
+            else:
+                para_b_text = first_part.strip()
+                if para_b_text and not para_b_text.endswith(('.', '!', '?')):
+                    para_b_text += '.'
+        
+        # Validate minimum content length
+        if len(para_a_text) < 10 or len(para_b_text) < 10:
+            continue
+        
+        # Create triplet
+        triplet = {
+            'paragraph_a': para_a_text,
+            'transition': original_transition,
+            'paragraph_b': para_b_text
+        }
+        
+        # Only log result for "Enfin"
+        if "Enfin" in transition:
+            print(f"✅ CREATED ENFIN TRIPLET:")
+            print(f"  A: '{triplet['paragraph_a'][:50]}...'")
+            print(f"  B: '{triplet['paragraph_b'][:50]}...'")
+        
+        # Check for duplicates
+        is_duplicate = False
+        for existing in triplets:
+            if (existing['paragraph_a'] == para_a_text and 
+                existing['paragraph_b'] == para_b_text and
+                existing['transition'] == original_transition):
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            triplets.append(triplet)
+    
+    return triplets
 
 
 def generate_outputs(all_triplets, all_transitions):
@@ -522,11 +721,11 @@ def main():
             for i, triplet in enumerate(st.session_state['all_triplets'][:sample_size], 1):
                 with st.expander(f"Triplet {i}: {triplet['transition']}"):
                     st.write("**Paragraph A:**")
-                    st.write(triplet['paragraph_a'])
+                    st.write(f"'{triplet['paragraph_a']}'")
                     st.write("**Transition:**")
                     st.write(f"*{triplet['transition']}*")
                     st.write("**Paragraph B:**")
-                    st.write(triplet['paragraph_b'])
+                    st.write(f"'{triplet['paragraph_b']}'")
 
 if __name__ == "__main__":
     main()
