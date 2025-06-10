@@ -527,14 +527,6 @@ def main():
                     st.write(f"*{triplet['transition']}*")
                     st.write("**Paragraph B:**")
                     st.write(triplet['paragraph_b'])
-    
-    # Clear data button
-    if st.session_state.get('all_triplets') or st.session_state.get('outputs'):
-        st.header("7. Reset")
-        if st.button("🗑️ Clear All Data", type="secondary"):
-            st.session_state.clear()
-            st.success("All data cleared!")
-            st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
