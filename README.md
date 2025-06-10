@@ -11,4 +11,5 @@ Each triplet is formatted as:
 ## 🔧 Installation
 
 pip install streamlit python-docx
+
 streamlit run transition_extractor.py
